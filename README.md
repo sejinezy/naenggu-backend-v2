@@ -24,7 +24,7 @@
 | 이름 | 역할 | GitHub |
 |---|---|---|
 | 다빈 👑 | 백엔드, 인프라 | [@parking-been](https://github.com/parking-been) |
-| 세진 | 백엔드 | [@sejunezy](https://github.com/sejunezy) |
+| 세진 | 백엔드, 인프라 | [@sejinezy](https://github.com/sejinezy) |
 
 ## 화면 소개
 
