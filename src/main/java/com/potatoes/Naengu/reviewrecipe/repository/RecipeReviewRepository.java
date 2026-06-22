@@ -1,5 +1,6 @@
 package com.potatoes.Naengu.reviewrecipe.repository;
 
+import com.potatoes.Naengu.recipe.dto.RecipeCountDto;
 import com.potatoes.Naengu.reviewrecipe.domain.model.RecipeReview;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -53,5 +54,16 @@ public interface RecipeReviewRepository extends JpaRepository<RecipeReview, Long
             @Param("cursorId") Long cursorId,
             Pageable pageable
     );
+
+    @Query("""
+            select new com.potatoes.Naengu.recipe.dto.RecipeCountDto(
+              rr.recipe.id,
+              count(rr)
+            )
+            from RecipeReview rr
+            where rr.recipe.id in :recipeIds
+            group by rr.recipe.id
+            """)
+    List<RecipeCountDto> countByRecipeIds(List<Long> recipeIds);
 
 }

@@ -11,7 +11,6 @@ import com.potatoes.Naengu.profile.repository.ProfileRepository;
 import com.potatoes.Naengu.recipe.domain.model.ProfileFavoriteRecipe;
 import com.potatoes.Naengu.recipe.domain.model.Recipe;
 import com.potatoes.Naengu.recipe.domain.model.RecipeWithLink;
-import com.potatoes.Naengu.recipe.domain.vo.RecipeSortType;
 import com.potatoes.Naengu.recipe.dto.FavoriteRecipeItem;
 import com.potatoes.Naengu.recipe.dto.FavoriteRecipesResponse;
 import com.potatoes.Naengu.recipe.dto.RecipeLikeResponse;
@@ -20,10 +19,11 @@ import com.potatoes.Naengu.recipe.dto.RecipeSearchItemResponse;
 import com.potatoes.Naengu.recipe.dto.RecipeSearchRequest;
 import com.potatoes.Naengu.recipe.dto.RecipeSearchResponse;
 import com.potatoes.Naengu.recipe.exception.RecipeErrorCode;
+import com.potatoes.Naengu.recipe.query.support.RecipeSearchMeta;
+import com.potatoes.Naengu.recipe.query.support.RecipeSearchMetaLoader;
 import com.potatoes.Naengu.recipe.repository.ProfileFavoriteRecipeRepository;
 import com.potatoes.Naengu.recipe.repository.RecipeIngredientRepository;
 import com.potatoes.Naengu.recipe.repository.RecipeRepository;
-import com.potatoes.Naengu.recipe.repository.RecipeTagRepository;
 import com.potatoes.Naengu.reviewrecipe.repository.RecipeReviewRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
@@ -42,13 +42,13 @@ import java.util.stream.Collectors;
 public class RecipeQueryService {
 
     private final RecipeRepository recipeRepository;
-    private final RecipeTagRepository recipeTagRepository;
     private final RecipeIngredientRepository recipeIngredientRepository;
     private final ProfileFavoriteRecipeRepository profileFavoriteRecipeRepository;
     private final RecipeReviewRepository recipeReviewRepository;
     private final ProfileRepository profileRepository;
     private final FridgeIngredientRepository fridgeIngredientRepository;
     private final FileUploadService fileUploadService;
+    private final RecipeSearchMetaLoader recipeSearchMetaLoader;
 
     @Transactional(readOnly = true)
     public RecipeSearchResponse search(Long userId, RecipeSearchRequest request) {
@@ -57,11 +57,7 @@ public class RecipeQueryService {
         Profile profile = profileRepository.findByUserEntityProviderId(userId)
                 .orElseThrow(() -> new ApiException(RecipeErrorCode.RECIPE_NOT_FOUND));
 
-        Set<Long> fridgeIngredientIds = fridgeIngredientRepository
-                .findAllByFridgeCategory_Fridge(profile.getFridge())
-                .stream()
-                .map(fi -> fi.getIngredient().getId())
-                .collect(Collectors.toSet());
+        Set<Long> fridgeIngredientIds = loadFridgeIngredientIds(profile);
 
         List<Recipe> recipes = fetchLatestRecipes(request);
 
@@ -70,8 +66,10 @@ public class RecipeQueryService {
             recipes = recipes.subList(0, request.size());
         }
 
+        RecipeSearchMeta meta = recipeSearchMetaLoader.load(recipes, fridgeIngredientIds, profile);
+
         List<RecipeSearchItemResponse> items = recipes.stream()
-                .map(recipe -> toItemResponse(recipe, fridgeIngredientIds, profile))
+                .map(recipe -> toItemResponse(recipe, meta))
                 .toList();
 
         CursorResponse nextCursor = null;
@@ -93,11 +91,7 @@ public class RecipeQueryService {
         Profile profile = profileRepository.findByUserEntityProviderId(userId)
                 .orElseThrow(() -> new ApiException(RecipeErrorCode.RECIPE_NOT_FOUND));
 
-        Set<Long> fridgeIngredientIds = fridgeIngredientRepository
-                .findAllByFridgeCategory_Fridge(profile.getFridge())
-                .stream()
-                .map(fi -> fi.getIngredient().getId())
-                .collect(Collectors.toSet());
+        Set<Long> fridgeIngredientIds = loadFridgeIngredientIds(profile);
 
         List<Recipe> recipes = fetchMatchCountRecipes(request, fridgeIngredientIds);
 
@@ -106,18 +100,19 @@ public class RecipeQueryService {
             recipes = recipes.subList(0, request.size());
         }
 
+        RecipeSearchMeta meta = recipeSearchMetaLoader.load(recipes, fridgeIngredientIds, profile);
+
         List<RecipeSearchItemResponse> items = recipes.stream()
-                .map(recipe -> toItemResponse(recipe, fridgeIngredientIds, profile))
+                .map(recipe -> toItemResponse(recipe, meta))
                 .toList();
 
         MatchCountCursorResponse nextCursor = null;
         if (hasNext && !recipes.isEmpty()) {
             Recipe last = recipes.get(recipes.size() - 1);
-            Set<Long> lastIngIds = recipeIngredientRepository.findByRecipe(last).stream()
-                    .map(ri -> ri.getIngredient().getId())
-                    .collect(Collectors.toSet());
-            lastIngIds.retainAll(fridgeIngredientIds);
-            nextCursor = new MatchCountCursorResponse(lastIngIds.size(), last.getId());
+            int lastMatchCount = meta.matchedIngredientCountMap()
+                    .getOrDefault(last.getId(), 0);
+
+            nextCursor = new MatchCountCursorResponse(lastMatchCount, last.getId());
         }
 
         return new RecipeMatchResponse(items, hasNext, nextCursor);
@@ -130,11 +125,7 @@ public class RecipeQueryService {
         Profile profile = profileRepository.findByUserEntityProviderId(userId)
                 .orElseThrow(() -> new ApiException(RecipeErrorCode.RECIPE_NOT_FOUND));
 
-        Set<Long> fridgeIngredientIds = fridgeIngredientRepository
-                .findAllByFridgeCategory_Fridge(profile.getFridge())
-                .stream()
-                .map(fi -> fi.getIngredient().getId())
-                .collect(Collectors.toSet());
+        Set<Long> fridgeIngredientIds = loadFridgeIngredientIds(profile);
 
         List<Recipe> recipes = fetchLikeCountRecipes(request);
 
@@ -143,14 +134,16 @@ public class RecipeQueryService {
             recipes = recipes.subList(0, request.size());
         }
 
+        RecipeSearchMeta meta = recipeSearchMetaLoader.load(recipes, fridgeIngredientIds, profile);
+
         List<RecipeSearchItemResponse> items = recipes.stream()
-                .map(recipe -> toItemResponse(recipe, fridgeIngredientIds, profile))
+                .map(recipe -> toItemResponse(recipe, meta))
                 .toList();
 
         LikeCountCursorResponse nextCursor = null;
         if (hasNext && !recipes.isEmpty()) {
             Recipe last = recipes.get(recipes.size() - 1);
-            int lastLikeCount = (int) profileFavoriteRecipeRepository.countByRecipe(last);
+            int lastLikeCount = meta.likeCountMap().getOrDefault(last.getId(), 0);
             nextCursor = new LikeCountCursorResponse(lastLikeCount, last.getId());
         }
 
@@ -168,30 +161,28 @@ public class RecipeQueryService {
             recipes = recipes.subList(0, request.size());
         }
 
+        RecipeSearchMeta meta = recipeSearchMetaLoader.loadAnonymous(recipes);
+
         List<RecipeSearchItemResponse> items = recipes.stream()
-                .map(this::toItemResponseAnonymous)
+                .map(recipe -> toItemResponse(recipe, meta))
                 .toList();
 
         LikeCountCursorResponse nextCursor = null;
         if (hasNext && !recipes.isEmpty()) {
             Recipe last = recipes.get(recipes.size() - 1);
-            int lastLikeCount = (int) profileFavoriteRecipeRepository.countByRecipe(last);
+            int lastLikeCount = meta.likeCountMap().getOrDefault(last.getId(), 0);
             nextCursor = new LikeCountCursorResponse(lastLikeCount, last.getId());
         }
 
         return new RecipeLikeResponse(items, hasNext, nextCursor);
     }
 
-    private RecipeSearchItemResponse toItemResponseAnonymous(Recipe recipe) {
+    private RecipeSearchItemResponse toItemResponse(Recipe recipe, RecipeSearchMeta meta) {
         String thumbnailUrl = recipe.getRecipeImage() != null
                 ? fileUploadService.getPublicUrl(recipe.getRecipeImage().getS3Key())
                 : fileUploadService.getDefaultProfileImageUrl();
 
         String source = recipe instanceof RecipeWithLink rwl ? rwl.getUrlSource() : null;
-
-        int totalIngredientCount = recipeIngredientRepository.countByRecipe(recipe);
-        int likeCount = (int) profileFavoriteRecipeRepository.countByRecipe(recipe);
-        int reviewCount = (int) recipeReviewRepository.countByRecipeId(recipe.getId());
 
         return new RecipeSearchItemResponse(
                 recipe.getId(),
@@ -201,11 +192,12 @@ public class RecipeQueryService {
                 recipe.getCookingTime(),
                 recipe.getServings(),
                 recipe.getDifficulty().getDescription(),
-                likeCount,
-                reviewCount,
-                totalIngredientCount,
-                0,      // matchedIngredientCount: 비인증이므로 냉장고 매칭 불가
-                false   // liked: 비인증이므로 찜 여부 알 수 없음
+
+                meta.likeCountMap().getOrDefault(recipe.getId(), 0),
+                meta.reviewCountMap().getOrDefault(recipe.getId(), 0),
+                meta.totalIngredientCountMap().getOrDefault(recipe.getId(), 0),
+                meta.matchedIngredientCountMap().getOrDefault(recipe.getId(), 0),
+                meta.likedRecipeIds().contains(recipe.getId())
         );
     }
 
@@ -257,40 +249,6 @@ public class RecipeQueryService {
         }
     }
 
-    private RecipeSearchItemResponse toItemResponse(Recipe recipe, Set<Long> fridgeIngredientIds, Profile profile) {
-        String thumbnailUrl = recipe.getRecipeImage() != null
-                ? fileUploadService.getPublicUrl(recipe.getRecipeImage().getS3Key())
-                : fileUploadService.getDefaultProfileImageUrl();
-
-        String source = recipe instanceof RecipeWithLink rwl ? rwl.getUrlSource() : null;
-
-        int totalIngredientCount = recipeIngredientRepository.countByRecipe(recipe);
-
-        Set<Long> recipeIngredientIds = recipeIngredientRepository.findByRecipe(recipe).stream()
-                .map(ri -> ri.getIngredient().getId())
-                .collect(Collectors.toSet());
-        recipeIngredientIds.retainAll(fridgeIngredientIds);
-        int matchedIngredientCount = recipeIngredientIds.size();
-
-        int likeCount = (int) profileFavoriteRecipeRepository.countByRecipe(recipe);
-        int reviewCount = (int) recipeReviewRepository.countByRecipeId(recipe.getId());
-        boolean liked = profileFavoriteRecipeRepository.existsByProfileAndRecipe(profile, recipe);
-
-        return new RecipeSearchItemResponse(
-                recipe.getId(),
-                recipe.getTitle(),
-                thumbnailUrl,
-                source,
-                recipe.getCookingTime(),
-                recipe.getServings(),
-                recipe.getDifficulty().getDescription(),
-                likeCount,
-                reviewCount,
-                totalIngredientCount,
-                matchedIngredientCount,
-                liked
-        );
-    }
 
     private void validateLatestCursor(RecipeSearchRequest request) {
         boolean hasCursorCreatedAt = request.cursorCreatedAt() != null;
@@ -336,8 +294,10 @@ public class RecipeQueryService {
             recipes = recipes.subList(0, request.size());
         }
 
+        RecipeSearchMeta meta = recipeSearchMetaLoader.load(recipes, fridgeIngredientIds, profile);
+
         List<RecipeSearchItemResponse> items = recipes.stream()
-                .map(recipe -> toItemResponse(recipe, fridgeIngredientIds, profile))
+                .map(recipe -> toItemResponse(recipe, meta))
                 .toList();
 
         CursorResponse nextCursor = null;
@@ -372,14 +332,16 @@ public class RecipeQueryService {
             recipes = recipes.subList(0, request.size());
         }
 
+        RecipeSearchMeta meta = recipeSearchMetaLoader.load(recipes, fridgeIngredientIds, profile);
+
         List<RecipeSearchItemResponse> items = recipes.stream()
-                .map(recipe -> toItemResponse(recipe, fridgeIngredientIds, profile))
+                .map(recipe -> toItemResponse(recipe, meta))
                 .toList();
 
         LikeCountCursorResponse nextCursor = null;
         if (hasNext && !recipes.isEmpty()) {
             Recipe last = recipes.get(recipes.size() - 1);
-            int lastLikeCount = (int) profileFavoriteRecipeRepository.countByRecipe(last);
+            int lastLikeCount = meta.likeCountMap().getOrDefault(last.getId(), 0);
             nextCursor = new LikeCountCursorResponse(lastLikeCount, last.getId());
         }
 
@@ -395,11 +357,7 @@ public class RecipeQueryService {
         Profile profile = profileRepository.findByUserEntityProviderId(userId)
                 .orElseThrow(() -> new ApiException(RecipeErrorCode.RECIPE_NOT_FOUND));
 
-        Set<Long> fridgeIngredientIds = fridgeIngredientRepository
-                .findAllByFridgeCategory_Fridge(profile.getFridge())
-                .stream()
-                .map(fi -> fi.getIngredient().getId())
-                .collect(Collectors.toSet());
+        Set<Long> fridgeIngredientIds = loadFridgeIngredientIds(profile);
 
         PageRequest pageable = PageRequest.of(0, size + 1);
         List<ProfileFavoriteRecipe> favorites = (cursorCreatedAt == null)

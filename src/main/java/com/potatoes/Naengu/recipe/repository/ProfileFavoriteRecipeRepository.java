@@ -3,6 +3,7 @@ package com.potatoes.Naengu.recipe.repository;
 import com.potatoes.Naengu.profile.domain.model.Profile;
 import com.potatoes.Naengu.recipe.domain.model.ProfileFavoriteRecipe;
 import com.potatoes.Naengu.recipe.domain.model.Recipe;
+import com.potatoes.Naengu.recipe.dto.RecipeCountDto;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -42,4 +43,27 @@ public interface ProfileFavoriteRecipeRepository extends JpaRepository<ProfileFa
             @Param("cursorId") Long cursorId,
             Pageable pageable
     );
+
+    @Query("""
+               select new com.potatoes.Naengu.recipe.dto.RecipeCountDto(
+                 pfr.recipe.id,
+                 count(pfr)
+               )
+               from ProfileFavoriteRecipe pfr
+               where pfr.recipe.id in :recipeIds
+               group by pfr.recipe.id
+            """)
+    List<RecipeCountDto> countByRecipeIds(@Param("recipeIds") List<Long> recipeIds);
+
+    @Query("""
+               select pfr.recipe.id
+               from ProfileFavoriteRecipe pfr
+               where pfr.profile = :profile
+               and pfr.recipe.id in :recipeIds
+            """)
+    List<Long> findLikedRecipeIdsByProfile(
+            @Param("profile") Profile profile,
+            @Param("recipeIds") List<Long> recipeIds
+    );
+
 }
